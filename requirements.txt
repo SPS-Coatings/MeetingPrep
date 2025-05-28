@@ -1,5 +1,1 @@
-streamlit 
-crewai
-crewai-tools
-openai
-sqlite3
+streamlit
