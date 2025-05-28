@@ -1,22 +1,48 @@
+###############################################################################
+# ── 0.  RUNTIME PATCH: ensure SQLite ≥ 3.35.0 for Chroma / CrewAI  ────────────
+###############################################################################
+from packaging import version
+import importlib, sys
+
+try:
+    import sqlite3
+    if version.parse(sqlite3.sqlite_version) < version.parse("3.35.0"):
+        # Swap in pysqlite3 (bundles SQLite 3.42+)
+        pysqlite3 = importlib.import_module("pysqlite3")
+        sys.modules["sqlite3"]  = pysqlite3
+        sys.modules["_sqlite3"] = pysqlite3
+except ModuleNotFoundError:
+    raise RuntimeError(
+        "Missing dependency `pysqlite3-binary`. "
+        "Run:  pip install pysqlite3-binary  and retry."
+    )
+
+###############################################################################
+# ── 1.  Imports  ──────────────────────────────────────────────────────────────
+###############################################################################
 import streamlit as st
 from crewai import Agent, Task, Crew, LLM
 from crewai.process import Process
 from crewai_tools import SerperDevTool
-import os
+import os, re
 
-# ── Streamlit app setup ──────────────────────────────────────────────────────────
+###############################################################################
+# ── 2.  Streamlit UI  ─────────────────────────────────────────────────────────
+###############################################################################
 st.set_page_config(page_title="AI Meeting Agent 📝", layout="wide")
 st.title("AI Meeting Preparation Agent 📝")
 
-# ── Sidebar for API keys ─────────────────────────────────────────────────────────
+# Sidebar – API keys
 st.sidebar.header("API Keys")
 anthropic_api_key = st.sidebar.text_input("Anthropic API Key", type="password")
-serper_api_key = st.sidebar.text_input("Serper API Key", type="password")
+serper_api_key    = st.sidebar.text_input("Serper API Key", type="password")
 
-# ── Main logic runs only when both keys are provided ─────────────────────────────
+###############################################################################
+# ── 3.  Main logic (only when keys provided)  ────────────────────────────────
+###############################################################################
 if anthropic_api_key and serper_api_key:
     os.environ["ANTHROPIC_API_KEY"] = anthropic_api_key
-    os.environ["SERPER_API_KEY"] = serper_api_key
+    os.environ["SERPER_API_KEY"]    = serper_api_key
 
     claude = LLM(
         model="claude-3-5-sonnet-20240620",
@@ -25,250 +51,286 @@ if anthropic_api_key and serper_api_key:
     )
     search_tool = SerperDevTool()
 
-    # ── User inputs ──────────────────────────────────────────────────────────────
-    company_name     = st.text_input("Enter the company name:")
+    # ── User inputs
+    company_name      = st.text_input("Enter the company name:")
     meeting_objective = st.text_input("Enter the meeting objective:")
-    attendees        = st.text_area("Enter the attendees and their roles (one per line):")
-    meeting_duration = st.number_input(
-        "Enter the meeting duration (in minutes):",
-        min_value=15, max_value=180, value=60, step=15
-    )
-    focus_areas      = st.text_input("Enter any specific areas of focus or concerns:")
+    attendees         = st.text_area("Enter the attendees and their roles (one per line):")
+    meeting_duration  = st.number_input("Enter the meeting duration (in minutes):",
+                                        min_value=15, max_value=180, value=60, step=15)
+    focus_areas       = st.text_input("Enter any specific areas of focus or concerns:")
 
-    # ── Agent definitions (expanded goals & backstories) ─────────────────────────
+    ############################################################################
+    # 4. Detect whether Castolin kiln-repair dataset is relevant
+    ############################################################################
+    cement_keywords = [
+        r"\bcement\b", r"\bcement\s*plant\b", r"\bkiln\b", r"\brotary\s*kiln\b",
+        r"\bcalciner\b", r"\bburner\b"
+    ]
+    query_blob      = f"{company_name} {meeting_objective} {focus_areas}".lower()
+    sector_relevant = any(re.search(pat, query_blob) for pat in cement_keywords)
+
+    ############################################################################
+    # 5. Agent definitions
+    ############################################################################
+    # 5-A  Castolin retrieval agent (only added if relevant)
+    if sector_relevant:
+        castolin_retriever = Agent(
+            role="Castolin Knowledge-Hub Retrieval Specialist",
+            goal=("Surface kiln-repair application records, ROI analytics, success "
+                  "stories, CRM feedback, and reference contacts."),
+            backstory=("Data steward for Castolin Eutectic’s Central Knowledge Hub "
+                       "covering 20 years of cement-plant wear-protection data."),
+            verbose=True,
+            allow_delegation=False,
+            llm=claude
+        )
+
+    # 5-B  Your original agents
     context_analyzer = Agent(
         role="Corporate Diligence & Context Specialist",
-        goal="""Deliver a forensic-level, 360-degree background dossier covering
-        company structure, leadership bios, product portfolio, strategic milestones,
-        patent/tech moat signals, financial KPIs, ESG posture, and current public
-        sentiment—then translate every datapoint into concrete meeting relevance.""",
-        backstory="""A former McKinsey & BCG consultant with 15 years in M&A due
-        diligence for Fortune 100 clientele. You routinely unpack S-1 filings,
-        10-Ks, global press releases, analyst calls, patent libraries, Glassdoor
-        reviews, academic papers, and regulatory databases. Your trademark is
-        relentless triangulation—no stone unturned, no unverified claim.""",
-        verbose=True,
-        allow_delegation=False,
-        llm=claude,
-        tools=[search_tool]
+        goal=("Deliver a forensic 360-degree dossier of the company and translate "
+              "each finding into meeting relevance."),
+        backstory=("Ex-McKinsey/BCG, 15 years M&A due-diligence, masters every "
+                   "public source from SEC filings to patent libraries."),
+        verbose=True, allow_delegation=False, llm=claude, tools=[search_tool]
     )
 
     industry_insights_generator = Agent(
         role="Senior Industry & Competitive Intelligence Analyst",
-        goal="""Surface macro-economic forces, value-chain dynamics, technology
-        disruptors, funding flows, regulatory headwinds/tailwinds, white-space
-        opportunities, and threat vectors—then map where the target company sits
-        today and could pivot tomorrow.""",
-        backstory="""Ex-Gartner VP of Research who authored multiple Magic
-        Quadrant reports and briefed C-suites on $1 B+ market entries. Adept at
-        mining primary research (S&P Capital IQ, Crunchbase, PitchBook),
-        secondary literature (Harvard Business Review, Forrester, IDC), and
-        synthesising them into strategic foresight frameworks.""",
-        verbose=True,
-        allow_delegation=False,
-        llm=claude,
-        tools=[search_tool]
+        goal=("Surface macro-economic forces, tech disruptors, regulatory shifts, "
+              "and competitive moves; position the target company."),
+        backstory=("Ex-Gartner VP Research; author of multiple Magic Quadrants."),
+        verbose=True, allow_delegation=False, llm=claude, tools=[search_tool]
     )
 
     strategy_formulator = Agent(
         role="Strategic Meeting Architect & Facilitator",
-        goal="""Engineer a minute-by-minute agenda that maximises decision
-        velocity, ensures stakeholder alignment, pre-emptively mitigates conflict,
-        and produces a concrete post-meeting action map with owners, metrics, and
-        deadlines.""",
-        backstory="""Former PMO lead at a Big 4 consultancy; designed and ran more
-        than 300 executive workshops for digital-transformation, JV kick-offs, and
-        multi-billion procurement negotiations. Certified SCRUM Master and
-        Prosci-ADKAR change practitioner—your sessions always end with measurable
-        next steps.""",
-        verbose=True,
-        allow_delegation=False,
-        llm=claude
+        goal=("Engineer a minute-by-minute agenda that maximises decision "
+              "velocity and produces measurable next steps."),
+        backstory=("Former Big-4 PMO director; 300+ C-suite workshops delivered."),
+        verbose=True, allow_delegation=False, llm=claude
     )
 
     executive_briefing_creator = Agent(
         role="C-Suite Communications & Storytelling Specialist",
-        goal="""Transform dense analysis into a crystalline brief that a busy
-        board member can absorb in < 2 minutes, highlighting strategic stakes,
-        data-driven narratives, and visually-scannable takeaways.""",
-        backstory="""A former speechwriter to two Fortune 50 CEOs and an award-
-        winning financial journalist. You blend narrative craft with data
-        precision, wielding tables, call-outs, and rhetoric so leadership grasps
-        the ‘why’ and the ‘so-what’ instantly.""",
-        verbose=True,
-        allow_delegation=False,
-        llm=claude
+        goal=("Transform dense analysis into a crystalline brief that a board can "
+              "absorb in < 2 minutes."),
+        backstory=("Ex-Fortune-50 CEO speechwriter; award-winning journalist."),
+        verbose=True, allow_delegation=False, llm=claude
     )
 
-    # ── Task definitions (unchanged but still exhaustive) ────────────────────────
+    # Assemble agent list
+    agents = [context_analyzer, industry_insights_generator,
+              strategy_formulator, executive_briefing_creator]
+    if sector_relevant:
+        agents.insert(0, castolin_retriever)
+
+    ############################################################################
+    # 6. Task definitions
+    ############################################################################
+    tasks = []
+
+    # 6-A  Castolin synthetic-data task (only if relevant)
+    if sector_relevant:
+        castolin_data_task = Task(
+            description="""
+            You have direct SQL/API access to **Castolin Central Knowledge Hub**.
+
+            **If this meeting is *not* about cement-plant kiln maintenance, reply
+            exactly with:**  
+            *“No Castolin internal data relevant to the requested sector.”*
+
+            **Otherwise** load the embedded YAML dataset (see below) and deliver:
+            1. ROI Summary Table (include annualised € savings).  
+            2. Three 80-word success stories with direct quotes.  
+            3. Reference directory (mask emails: first initial + "***").
+
+            Total output ≤ 600 words in the specified markdown structure.
+
+            ```yaml
+            applications_records:
+              - id: APR-2023-001
+                plant: Holcim Lägerdorf Plant
+                country: Germany
+                equipment: Rotary Kiln (Outlet section)
+                product_used: CastoDur Diamond Plate 4666
+                year: 2023
+                downtime_reduction_hours: 68
+                cost_saving_eur: 235000
+                roi_months: 4.2
+              - id: APR-2024-004
+                plant: Heidelberg Materials Leimen
+                country: Germany
+                equipment: Rotary Kiln (Tire & Shell)
+                product_used: CastoWear 3001 Weld Overlay
+                year: 2024
+                downtime_reduction_hours: 102
+                cost_saving_eur: 412000
+                roi_months: 3.5
+              - id: APR-2024-012
+                plant: CEMEX Broceni
+                country: Latvia
+                equipment: Calciner Knee
+                product_used: Castolin Xuper 6256 Wire
+                year: 2024
+                downtime_reduction_hours: 57
+                cost_saving_eur: 178000
+                roi_months: 5.1
+              - id: APR-2025-003
+                plant: Buzzi Unicem Vernasca
+                country: Italy
+                equipment: Rotary Kiln (Inlet)
+                product_used: EnDOtec® DO*327 Deposit
+                year: 2025
+                downtime_reduction_hours: 89
+                cost_saving_eur: 305000
+                roi_months: 3.9
+
+            success_stories:
+              - story_id: SS-2023-09
+                plant: Holcim Lägerdorf
+                quote: "Castolin's Diamond Plate halved our maintenance windows—game changer!"
+                outcome: "Extended kiln life by 18 months, saved €235 k first year."
+              - story_id: SS-2024-02
+                plant: Heidelberg Materials Leimen
+                quote: "ROI in under 4 months, unprecedented reliability."
+                outcome: "Zero unplanned stoppages for 11 months."
+              - story_id: SS-2025-01
+                plant: Buzzi Unicem Vernasca
+                quote: "Castolin overlay reduced shell warpage, exceeded OEM specs."
+                outcome: "Projected €1.2 M savings over 5-year horizon."
+
+            crm_references:
+              - plant: CEMEX Broceni
+                contact: Janis Ozols
+                role: Maintenance Manager
+                email: janis.ozols@cemex.com
+                satisfaction_score: 9.7
+              - plant: Holcim Lägerdorf
+                contact: Claudia Meyer
+                role: Production Engineer
+                email: claudia.meyer@holcim.com
+                satisfaction_score: 9.5
+
+            directory_contacts:
+              - plant: Holcim Lägerdorf
+                person: Dr. Markus Hahn
+                position: Plant Director
+                email: markus.hahn@holcim.com
+                phone: +49 451 789 123
+              - plant: Heidelberg Materials Leimen
+                person: Susanne Krüger
+                position: Maintenance Lead
+                email: s.krueger@heidelbergmaterials.com
+                phone: +49 6224 567 890
+              - plant: CEMEX Broceni
+                person: Janis Ozols
+                position: Maintenance Manager
+                email: janis.ozols@cemex.com
+                phone: +371 637 445 21
+              - plant: Buzzi Unicem Vernasca
+                person: Luca Bianchi
+                position: Engineering Chief
+                email: l.bianchi@buzziunicem.it
+                phone: +39 0523 764 998
+              - plant: Titan Cement Thessaloniki
+                person: Maria Papadopoulou
+                position: Reliability Engineer
+                email: mpapad@titan.gr
+                phone: +30 2310 998 332
+            ```
+            """,
+            agent=castolin_retriever,
+            expected_output=("Markdown with ROI table, success stories and "
+                             "masked directory *or* the single-line notice "
+                             "when sector not relevant.")
+        )
+        tasks.append(castolin_data_task)
+
+    # 6-B  Public-source context analysis
+    internal_clause = (
+        "Integrate public sources with Castolin ROI data."
+        if sector_relevant else
+        "No Castolin data available; rely solely on public sources."
+    )
     context_analysis_task = Task(
         description=f"""
-        ***DO FIRST – Rapid Web Reconnaissance***  
-        1. Run **≥ 3** Serper queries combining “{company_name}” with
-           “earnings”, “partnership”, “acquisition”, and “{meeting_objective}”.  
-        2. From the **top 5** results per query (≤ 12 months old) capture:  
-           • Headline & publication date  
-           • One-sentence takeaway  
-           • Markdown hyperlink.
+        {internal_clause}
 
-        ***DO SECOND – Corporate Deep-Dive***  
-        – Explain {company_name}'s business model, flagship products/services,
-          geographic revenue split, and latest **financial KPIs** (revenue, YoY
-          growth, gross margin, EBITDA).  
-        – Map the **3–4** closest competitors with clear differentiators
-          (price, tech, distribution, brand).  
-        – Extract any relevant ESG or regulatory issues.
+        1 · Rapid Web Recon – ≥ 3 Serper searches combining “{company_name}”
+        with “earnings”, “partnership”, “acquisition”, “{meeting_objective}”.  
+        2 · Company Deep-Dive – business model, KPIs, competitors, ESG flags.  
+        3 · Meeting Relevance – link findings to objective, attendees, focus areas.
 
-        ***DO THIRD – Meeting Relevance***  
-        Tie every insight back to:  
-        • Objective: “{meeting_objective}”  
-        • Attendees & roles:  
-        {attendees}  
-        • Focus areas / concerns: {focus_areas}
-
-        ***DELIVERABLE*** – concise markdown report (≤ 450 words):
-
-        # Context Snapshot  
-        ## Breaking News  
-        | Date | Headline | Why it Matters |  
-        |------|----------|---------------|  
-
-        ## Company Profile  
-        – Bullet summary (products, KPIs, competitors, ESG flags).
-
-        ## Implications for the Meeting  
-        – 3–5 bullets linking findings to objective/focus areas.
-
-        Use **bold** for critical figures; maintain clean markdown.
+        Deliver ≤ 450 words markdown with headings:
+        # Context Snapshot → ## Breaking News → ## Company Profile
+        → ## Implications for the Meeting
         """,
         agent=context_analyzer,
-        expected_output="Detailed context analysis with clear relevance to meeting objective."
+        expected_output="Context analysis (public + optional internal)."
     )
+    tasks.append(context_analysis_task)
 
+    # 6-C  Industry analysis
     industry_analysis_task = Task(
         description=f"""
-        Build upon the context analysis to craft a forward-looking **industry
-        intelligence brief** for {company_name}'s sector.
+        Craft a ≤ 500-word industry intelligence brief.
 
-        ***DATA GATHERING***  
-        • Serper queries: “<industry> 2025 outlook”, “emerging trends”,
-          “regulatory changes”, “market size 2024-2028”.  
-        • Extract quantitative data (CAGR, TAM, funding) from Gartner, McKinsey,
-          S&P, Crunchbase; cite via markdown links.
-
-        ***ANALYSIS FRAMEWORK***  
-        1. **Macro Trends** – 3-4 forces shaping the landscape.  
-        2. **Competitive 2×2 Matrix** – Leader | Challenger | Niche | Emerging;
-           indicate {company_name}'s position.  
-        3. **Opportunities & Threats** – Rate impact probability & magnitude
-           vs. “{meeting_objective}”.
-
-        ***DELIVERABLE*** – markdown brief (≤ 500 words):
-
-        # Industry Pulse 2025  
-        ## Macro Trends  
-        – …
-
-        ## Competitive Landscape  
-        – Table + bullets.
-
-        ## Opportunity/Threat Radar  
-        – Numbered list linking back to {company_name}.
-
-        Spotlight insights relevant to the next **18 months**.
+        • Data: “<industry> 2025 outlook”, “maintenance trends”, etc.  
+        • 3-4 Macro Trends; 2×2 Competitive Matrix incl. {company_name}.  
+        • Opportunity/Threat radar (probability & magnitude).
         """,
         agent=industry_insights_generator,
-        expected_output="Comprehensive industry analysis aligned with meeting goals."
+        expected_output="Industry brief aligned with meeting goals."
     )
+    tasks.append(industry_analysis_task)
 
+    # 6-D  Strategy & agenda
+    roi_note = ("Include Castolin ROI stories as social proof."
+                if sector_relevant else
+                "Do not reference Castolin internal data.")
     strategy_development_task = Task(
         description=f"""
-        Design a **high-impact, minute-by-minute strategy** for the
-        {meeting_duration}-minute session with {company_name}.
+        Minute-by-minute agenda for {meeting_duration}-minute meeting.
 
-        ***INPUTS***  
-        – Context summary  
-        – Industry brief  
-        – Objective: “{meeting_objective}”  
-        – Focus areas: {focus_areas}
-
-        ***AGENDA RULES***  
-        • Max **4** agenda blocks + closing.  
-        • Reserve **≥ 5 min** Q&A.  
-        • Assign owner per block (match attendee roles).  
-        • For each block state: purpose, data reference, desired outcome
-          (decision, alignment, info).
-
-        ***DELIVERABLE*** – markdown table:
-
-        | Time | Topic | Owner | Talking Points | Desired Outcome |  
-        |------|-------|-------|----------------|-----------------|
-
-        End with **Facilitator Tips** (bullets) tackling focus areas.  
-        Limit length to **≤ 350 words**.
+        • ≤ 4 blocks + closing; ≥ 5 min Q&A.  
+        • Table: Time | Topic | Owner | Talking Points | Desired Outcome.  
+        {roi_note}  
+        Add facilitator tips (≤ 350 words).
         """,
         agent=strategy_formulator,
-        expected_output="Time-boxed strategy & agenda with facilitator guidance."
+        expected_output="Agenda table + facilitator tips."
     )
+    tasks.append(strategy_development_task)
 
+    # 6-E  Executive brief
+    roi_clause = ("Cite ≥ 2 Castolin ROI stats."
+                  if sector_relevant else
+                  "Exclude Castolin internal data.")
     executive_brief_task = Task(
         description=f"""
-        Produce a **board-ready executive brief** that a leader can absorb in
-        **< 2 minutes**.
+        Board-ready brief ≤ 600 words:
 
-        ***STRUCTURE (use exact H1/H2/H3)***
+        • Executive Summary (objective, duration, attendees, 3 bold outcomes)  
+        • Key Insights (company, industry{', Castolin ROI tie-ins' if sector_relevant else ''})  
+        • Risks & Mitigations table  
+        • Talking Points & Data (link every stat)  
+        • Anticipated Q&A table  
+        • Recommendations & Next Steps (owner + date)
 
-        # Executive Summary  
-        • Objective: “{meeting_objective}”  
-        • Meeting length: {meeting_duration} min  
-        • Attendees & roles (concise list)  
-        • **Top 3 strategic outcomes** (bold verbs)
-
-        # Key Insights  
-        ## Company Snapshot  
-        – 3 bullets  
-        ## Industry Pulse  
-        – 3 bullets  
-        ## Risks & Mitigations  
-        | Risk | Likelihood | Mitigation |  
-        |------|------------|-----------|
-
-        # Talking Points & Data  
-        – Numbered list, ≤ 25 words each, with one statistic/example
-          (*italicised*) + hyperlink.
-
-        # Anticipated Questions & Answers  
-        | Question | 2-line Answer | Backup Link |  
-        |----------|--------------|-------------|
-
-        # Recommendations & Next Steps  
-        – 3–5 action bullets with owner + target date
-
-        ***FORMATTING RULES***  
-        • Bold, italics, tables for scannability.  
-        • Total length **≤ 600 words**.  
-        • Every external fact has inline markdown link.
-
-        Ensure direct alignment with focus areas: {focus_areas}.
+        {roi_clause}
         """,
         agent=executive_briefing_creator,
-        expected_output="Concise, data-rich executive brief ready for C-suite."
+        expected_output="Concise executive brief."
     )
+    tasks.append(executive_brief_task)
 
-    # ── Build and run the crew ───────────────────────────────────────────────────
+    ############################################################################
+    # 7. Build and run the Crew
+    ############################################################################
     meeting_prep_crew = Crew(
-        agents=[
-            context_analyzer,
-            industry_insights_generator,
-            strategy_formulator,
-            executive_briefing_creator
-        ],
-        tasks=[
-            context_analysis_task,
-            industry_analysis_task,
-            strategy_development_task,
-            executive_brief_task
-        ],
+        agents=agents,
+        tasks=tasks,
         verbose=True,
         process=Process.sequential
     )
@@ -278,20 +340,15 @@ if anthropic_api_key and serper_api_key:
             result = meeting_prep_crew.kickoff()
         st.markdown(result)
 
-    # ── Sidebar instructions ────────────────────────────────────────────────────
+    # Sidebar help
     st.sidebar.markdown("""
     ## How to use this app
-    1. Enter your API keys in the sidebar.  
-    2. Provide the requested meeting details.  
-    3. Click **Prepare Meeting** to generate your tailored preparation package.
+    1. Enter your API keys.  
+    2. Fill in the meeting details.  
+    3. Click **Prepare Meeting**.
 
-    The AI agents will jointly:
-    - Analyse the meeting context and company background  
-    - Provide industry insights and trend foresight  
-    - Develop a data-driven meeting strategy and agenda  
-    - Craft a board-quality executive brief
-
-    *This may take a few minutes—thanks for your patience!*  
+    *If the sector involves cement-plant kiln repair, proprietary Castolin data
+    will be included automatically; otherwise, analysis is public-source only.*
     """)
 else:
     st.warning("Please enter both API keys in the sidebar before proceeding.")
