@@ -1,3 +1,4 @@
 streamlit
 crewai
 pysqlite3-binary
+crewai_tools
