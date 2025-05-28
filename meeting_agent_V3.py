@@ -347,8 +347,8 @@ if anthropic_api_key and serper_api_key:
     2. Fill in the meeting details.  
     3. Click **Prepare Meeting**.
 
-    *If the sector involves cement-plant kiln repair, proprietary Castolin data
-    will be included automatically; otherwise, analysis is public-source only.*
+    *If proprietary Castolin data can be retreived for the specific customer
+    will be included automatically from CRM and SalesBuddy; otherwise, analysis is public-source only.*
     """)
 else:
     st.warning("Please enter both API keys in the sidebar before proceeding.")
